@@ -1,0 +1,34 @@
+#!/bin/bash
+
+source ./config
+
+mkdir $HOME/tmp/git-migration 2> /dev/null
+cat /dev/null > repos.txt
+
+# get list of repos per owner from Gitea/Forgejo API
+for OWNER in "${OWNERS[@]}"
+do
+	echo "fetching ${OWNER} repositories"
+	curl -s "${SOURCE_GIT}/api/v1/users/${OWNER}/repos?limit=100" \
+		| jq -r ".[].full_name" >> repos.txt
+done
+
+while IFS= read -r line; do
+	IFS='/' read -ra PIECES <<< "$line"
+	# 0. create repo/project in gitlab in the correct namespace
+	curl -s \
+		--header "Authorization: Bearer ${GITLAB_PAT}" \
+		--request POST \
+		"${DESTINATION_GIT}/api/v4/projects?name=${PIECES[1]}&namespace_id=${NAMESPACES[""${PIECES[0]}""]}&visibility=public" > /dev/null
+	echo "created destination repo for $line"
+	# 1. clone $line
+	git clone --quiet "${SOURCE_GIT}/$line.git" "$HOME/tmp/git-migration/$line"
+	# 2. add ${DESTINATION_GIT}/$line.git as remote
+	git -C "$HOME/tmp/git-migration/$line" remote set-url origin "${DESTINATION_GIT}/$line.git"
+	# 3. push main to destination
+	git -C "$HOME/tmp/git-migration/$line" push -u origin main
+	echo "$line migrated"
+	echo "---"
+done < repos.txt
+
+rm -rf $HOME/tmp/git-migration
